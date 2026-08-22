@@ -1,0 +1,7 @@
+requests
+beautifulsoup4
+trafilatura
+groq
+python-dotenv
+rich
+diskcache
