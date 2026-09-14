@@ -1,6 +1,7 @@
 requests
 beautifulsoup4
 trafilatura
+lxml_html_clean
 groq
 python-dotenv
 rich

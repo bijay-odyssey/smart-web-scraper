@@ -323,6 +323,15 @@ def _fetch_raw_pool(query: str, retries_per_backend: int) -> list[dict]:
             _throttle(name)
             try:
                 results = backend_fn(query, RAW_POOL_SIZE)
+                if not results:
+                    # A "successful" call with zero results is treated the
+                    # same as a blocked one: fall through to the next
+                    # backend instead of accepting and caching an empty
+                    # pool (confirmed live -- a transient empty response
+                    # from one backend got cached and silently skipped
+                    # every other backend, including a working one, for
+                    # the rest of the cache TTL).
+                    raise SearchBlockedError(f"{name} returned zero results")
                 cache.set_search(query, results)
                 return results
             except (SearchBlockedError, requests.RequestException) as e:

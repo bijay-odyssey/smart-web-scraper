@@ -23,11 +23,21 @@ Where it actually wins is as **infrastructure you own**: a function you can call
 - Ships three ways: a CLI, a `--json` mode for scripting, and an importable tool with a standard function-calling schema so any LLM agent can call it directly
 - Caches results to disk so repeat or near-duplicate queries don't hit the same backends twice
 
-## Setup
+## Quick start
 
 ```bash
 git clone https://github.com/bijay-odyssey/smart-web-scraper.git
 cd smart-web-scraper
+./start.sh        # Windows: start.bat
+```
+
+First run creates the virtualenv, installs dependencies, and writes `.env` from the template, then stops and tells you to add a `GROQ_API_KEY`. Add it (free at [console.groq.com](https://console.groq.com)) and run the script again — it'll finish setup and run a demo search so you can see it actually working.
+
+## Manual setup
+
+If you'd rather do it by hand instead of using the start script:
+
+```bash
 python -m venv .venv
 .venv\Scripts\activate      # on macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
