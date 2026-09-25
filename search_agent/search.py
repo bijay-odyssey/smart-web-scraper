@@ -66,8 +66,24 @@ class SearchBlockedError(RuntimeError):
     challenging this client instead of returning real results."""
 
 
+class EmptyResultError(SearchBlockedError):
+    """A backend answered successfully but found nothing. Subclasses
+    SearchBlockedError so it's caught by the same retry/fallthrough
+    logic -- an empty response is handled identically to a blocked one
+    (try the next backend, don't cache it) -- but callers one level up
+    can tell "genuinely no results anywhere" apart from "got rate-limited
+    everywhere" by checking AllBackendsBlockedError.all_empty."""
+
+
 class AllBackendsBlockedError(RuntimeError):
-    """Raised by search() when every backend failed."""
+    """Raised by search() when every backend failed.
+
+    Carries `.all_empty` (bool): True if every single failure across
+    every backend/attempt was an EmptyResultError (nothing was found,
+    nobody blocked us), False if at least one was a real block/network
+    error. Set by _fetch_raw_pool; defaults to False if unset."""
+
+    all_empty = False
 
 
 _last_request_time: dict[str, float] = {}
@@ -317,6 +333,7 @@ def _fetch_raw_pool(query: str, retries_per_backend: int) -> list[dict]:
         return cached
 
     errors = []
+    all_empty = True
     for name, backend_fn in _get_backends():
         delay = 3.0
         for attempt in range(retries_per_backend + 1):
@@ -331,18 +348,22 @@ def _fetch_raw_pool(query: str, retries_per_backend: int) -> list[dict]:
                     # from one backend got cached and silently skipped
                     # every other backend, including a working one, for
                     # the rest of the cache TTL).
-                    raise SearchBlockedError(f"{name} returned zero results")
+                    raise EmptyResultError(f"{name} returned zero results")
                 cache.set_search(query, results)
                 return results
             except (SearchBlockedError, requests.RequestException) as e:
                 errors.append(f"{name}: {e}")
+                if not isinstance(e, EmptyResultError):
+                    all_empty = False
                 if attempt < retries_per_backend:
                     time.sleep(delay)
                     delay *= 2
 
-    raise AllBackendsBlockedError(
+    blocked = AllBackendsBlockedError(
         "All search backends failed: " + "; ".join(errors)
     )
+    blocked.all_empty = all_empty
+    raise blocked
 
 
 def search(query: str, max_results: int = 8, retries_per_backend: int = 1) -> list[dict]:

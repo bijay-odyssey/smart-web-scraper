@@ -32,7 +32,7 @@ from search_agent.tool import TOOL_SCHEMA, execute_tool_call
 # have that quirk, so it's used here for the agent's decision-making;
 # gpt-oss-120b is still used for synthesis (search_agent/synthesize.py),
 # where no tools are involved and it performs well.
-MODEL = os.environ.get("AGENT_MODEL", "qwen/qwen3.6-27b")
+MODEL = os.environ.get("AGENT_MODEL", "qwen/qwen3.8-27b")
 
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 

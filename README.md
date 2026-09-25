@@ -78,6 +78,92 @@ from search_agent.tool import TOOL_SCHEMA, execute_tool_call
 
 `examples/agent_example.py` is a working demo: an LLM decides on its own whether it needs to search, calls the tool if so, and answers from the result — including handling a search failure without making anything up.
 
+## Machine interface
+
+This is the contract for anything that imports `search_agent.tool` directly instead of shelling out to the CLI — the Python surface is the stable interface; the CLI is a wrapper around the same `run_pipeline()` call underneath, so its `--json` output has the identical shape documented here.
+
+### Tool schema
+
+`search_agent.tool.TOOL_SCHEMA` is a standard OpenAI-style function schema:
+
+```json
+{
+  "type": "function",
+  "function": {
+    "name": "web_search",
+    "description": "Search the live web for a query and return a synthesized, cited answer...",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string", "description": "The search query."},
+        "num_results": {"type": "integer", "description": "How many web pages to search and read (default 6)."}
+      },
+      "required": ["query"]
+    }
+  }
+}
+```
+
+Call it via `execute_tool_call("web_search", {"query": "...", "num_results": 6})`, which returns a JSON **string** (ready to drop straight into a `role: tool` message). `num_results` is optional and defaults to 6.
+
+### Return shape
+
+A successful call returns exactly this shape — unchanged since this project's first version, and it will stay that way; new failure modes get their own field, not a reshaped success case:
+
+```json
+{
+  "query": "groq api free tier limits",
+  "answer": "1. Groq's free-tier API is available without a credit card...\n\n**Sources**\n\n[1] https://...",
+  "sources": [
+    {"index": 1, "title": "Groq Free Tier 2026: ...", "url": "https://..."}
+  ]
+}
+```
+
+A failed call keeps the same three keys (so code that only ever reads `result["answer"]` still works without a KeyError) and adds a fourth: `"error"`, set to one of a fixed set of codes. **The presence of the `error` key is the discriminator** — check for it rather than pattern-matching the `answer` text, which is prose meant for a human/LLM, not a machine.
+
+| `error` value | What actually happened | `sources` |
+|---|---|---|
+| *(key absent)* | Success | populated |
+| `missing_api_key` | `GROQ_API_KEY` isn't set. Caught before any search is attempted, so this is fast — no wasted network calls. | `[]` |
+| `no_results` | Every configured backend answered successfully but found nothing relevant. Not a block, not an error — genuinely nothing there. | `[]` |
+| `search_blocked` | At least one backend actually rate-limited or challenged this client (or errored for some other transport reason), and every backend in the chain ended up failing. | `[]` |
+| `fetch_failed` | Search found results, but page content couldn't be read from any of them. | `[]` |
+| `synthesis_failed` | Sources were fetched successfully, but the Groq call itself failed (bad/rejected key, Groq-side outage, Groq-side rate limit). | `[]` |
+| `internal_error` | Catch-all for anything genuinely unanticipated. If you see this in practice, it's worth a bug report. | `[]` |
+
+This is a real, verified distinction, not just a label — `no_results` and `search_blocked` used to collapse into the same response before this was added, because an empty result and a rate-limited backend were handled identically internally (on purpose, for retry/fallthrough) but were indistinguishable from the outside. They're still handled identically internally; only the outward classification changed.
+
+`execute_tool_call` never raises for a runtime condition — every case above comes back as a parseable JSON string, including cases this project can't fully anticipate (`internal_error` is the backstop). The one deliberate exception: an unrecognized `function_name` raises `ValueError`. That's a caller wiring bug, not something a search can fail at, so it's kept as a real exception instead of being folded into the error codes above.
+
+### CLI `--json` shape
+
+`python -m search_agent.cli "<query>" --json` prints the exact same dict as `run_pipeline()`/`execute_tool_call()` returns, `json.dumps(..., indent=2)`'d to stdout — same keys, same `error` codes, nothing added or renamed for the CLI specifically. A real captured example:
+
+```json
+{
+  "query": "groq api free tier limits",
+  "answer": "1. Groq's free-tier API is available without a credit card and applies rate limits...",
+  "sources": [
+    {"index": 1, "title": "Groq Free Tier 2026: 1,000 Requests a Day, Llama Is Gone", "url": "https://klymentiev.com/blog/groq-pricing"},
+    {"index": 2, "title": "Groq Pricing 2026: Per-Model Rates, Free Tier, Batch ...", "url": "https://www.layer3labs.io/guides/groq-pricing"}
+  ]
+}
+```
+
+### Cache behaviour
+
+`search_agent/cache.py` disk-caches two things, independently:
+
+- **Search results** (the raw backend pool, pre-ranking) — 1 hour TTL, keyed by normalized query text
+- **Fetched page text** — 6 hour TTL, keyed by URL
+
+Both are genuinely fast on a hit — measured at 0.00s for a repeat query's search and fetch stages, versus several seconds cold. **What is *not* cached: synthesis.** Every call makes a fresh Groq request to write the answer text, cache hit or not — measured at 18.4s in isolation on one run. So a "repeat" query is not meaningfully faster end to end than a fresh one; only the search+fetch portion of the latency goes away.
+
+The cache lives at `<project root>/.cache/` (a `diskcache` SQLite store). It's created — file and all — the moment `search_agent.tool` (or anything importing it) is imported, not lazily on first search. Importing the module also runs `load_dotenv()` (reads `.env` into the process environment); nothing else happens at import time — no network calls, no other file writes.
+
+`--no-cache` on the CLI (or `search_agent.cache.set_enabled(False)` at the Python level) disables cache *reads* for that run; writes still happen so later calls benefit.
+
 ## How it's put together
 
 ```
@@ -98,6 +184,7 @@ examples/
 
 - DuckDuckGo and Bing scraping are inherently fragile — free search APIs (Tavily/Brave) fix this when configured, but scraping is still the fallback path if you don't set them up
 - The example agent's own free-text answers don't always keep citations as cleanly as the core pipeline does
+- Synthesis isn't cached (search and page fetches are) — a repeat query still pays the full Groq generation cost every time, which dominates total latency
 - No test suite yet — everything's been verified by hand against live queries so far
 
 ## Skills demonstrated
